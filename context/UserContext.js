@@ -1,145 +1,121 @@
-import React from "react";
-import { useRouter } from 'next/router';
-import apiClient from "../apiClient";
-import useStorage from "../hooks/useStorage";
+import { createContext, useContext, useReducer } from 'react';
+import { Router } from 'next/router';
+import {
+  GetSessionItem,
+  SetSessionItem,
+  RemoveSessionItem,
+} from '@hooks/useSessionStorage';
 
-const { getItem, setItem, removeItem } = useStorage();
+import apiClient from './apiClient';
 
-let UserStateContext = React.createContext();
-let UserDispatchContext = React.createContext();
+// Creating context objects
+let UserContext = createContext();
+let UserDispatchContext = createContext();
 
-function userReducer(state, action) {
-    switch(action.type) {
-        case "LOGIN_SUCCESS":
-            return { ...state, isAuthenticated: true };
-        case "SIGN_OUT_SUCCESS":
-            return { ...state, isAuthenticated: false };
-        default: {
-            return { ...state, isAuthenticated: false}
-        }
+// userReducer dispatches login actions and updates state appropriately
+const userReducer = (state, action) => {
+  switch (action.type) {
+    case 'LOGIN_SUCCESS':
+      return { ...state, isAuthenticated: true };
+    case 'SIGN_OUT_SUCCESS':
+      return { ...state, isAuthenticated: false };
+    default:
+      throw new Error(`Unhandled action type: ${action.type}`);
+      return { ...state, isAuthenticated: false };
+  }
+};
+
+// UserProvider shall be used to wrap root element to pass context state
+export const UserProvider = ({ children }) => {
+  let [state, dispatch] = useReducer(userReducer, {
+    isAuthenticated: !!getLoginToken(),
+  });
+
+  return (
+    <UserContext.Provider value={state}>
+      <UserDispatchContext.Provider value={dispatch}>
+        {children}
+      </UserDispatchContext.Provider>
+    </UserContext.Provider>
+  );
+};
+
+/* export const userContextProvider = ({ children }) => {
+  return <UserContext.Provider>{children}</UserContext.Provider>;
+}; */
+
+export const useUserContext = () => {
+  let context = useContext(UserContext);
+  if (context === undefined) {
+    throw new Error('useUserState must be used within a UserContext Provider');
+  }
+
+  return context;
+};
+
+export const useUserDispatchContext = () => {
+  let context = useContext(UserDispatchContext);
+  if (context === undefined) {
+    throw new Error(
+      'useUserDispatchContext must to used within a UserDispatchContext Provider'
+    );
+  }
+
+  return context;
+};
+
+/* Authentication Utility functions */
+const getLoginToken = () => {
+  let stringValue = GetSessionItem('id_token');
+  if (stringValue !== null) {
+    let value = JSON.parse(stringValue);
+    let expirationDate = newDate(value.expirationDate);
+    if (expirationDate > new Date()) {
+      return value.value;
+    } else {
+      RemoveSessionItem('id_token');
     }
-}
+  }
+  return null;
+};
 
-function UserProvider({ children }) {
-    let [state, dispatch] = React.useReducer(userReducer, {
-        isAuthenticated: !!getLoginToken()
-    })
+export const loginUser = (
+  dispatch,
+  username,
+  password,
+  history,
+  setIsLoading,
+  setError,
+  setErrorMessage
+) => {
+  setError(false);
+  setIsLoading(true);
 
-    return (
-        <UserStateContext.Provider value={state}>
-            <UserDispatchContext.Provider value={dispatch}>
-                { children }
-            </UserDispatchContext.Provider>
-        </UserStateContext.Provider>
-    )
-}
+  let data = {
+    username: username,
+    password: password,
+  };
 
-function useUserState() {
-    let context = React.useContext(UserStateContext);
-    if(context === undefined) {
-        throw new Error("useUserState must be used within a UserProvider");
-    }
-    return context;
-}
-
-function useUserDispatch() {
-    let context = React.useContext(UserDispatchContext);
-    if(context === undefined) {
-        throw new Error("useUserDispatch must eb used within a UserProvider");
-    }
-
-    return context;
-}
-
-/* ################################# */
-/* Authentication and Authorization functions */
-function getLoginToken() {
-    let stringValue = getItem("id_token");
-    if(stringValue !== null) {
-        let value = JSON.parse(stringValue);
-        let expirationDate = new Date(value.expirationDate);
-        if(expirationDate > newDate()) {
-            return value.value;
-        } else {
-            removeItem("id_token");
-        }
-    }
-    return null;
-}
-
-function loginUser(dispatch, login, password, setIsLoading, setError, setErrorMessage) {
-    setError(false);
-    setIsLoading(true);
-
-    let data = {
-        username: login,
-        password: password
-    }
-
-    if(!!login && !!password) {
-        apiClient.post("/auth/login", data).then((response) => {
-            if(response.data.error) {
-                setError(true);
-                setIsLoading(false);
-                setErrorMessage(response.data.error);
-            } else {
-                let expirationInHours = 24;
-                // 24 hours into MS
-                let expirationInMs = 60 * 60 * 1000 * expirationInHours;
-                let expirationDate = new Date(new Date().getTime() + expirationInMs);
-                let id_token = {
-                    value: response.data.accessToken,
-                    expirationDate: expirationDate.toISOString()
-                };
-
-                setItem("id_token", JSON.stringify(id_token));
-                setError(null);
-                setIsLoading(false);
-                dispatch({ type: "LOGIN_SUCCESS" });
-                router.push({ pathname: '/'});
-            }
-        })
-    }
-}
-
-function signOut(dispatch) {
-    apiClient.get("/auth/logout")
-    .then(() => {
-        removeItem("id_token");
-        dispatch({type: "SIGN_OUT_SUCCESS"});
-        router.push({ pathname: '/login' });
-    })
-}
-
-function resetPassword(dispatch, login, password, confirmPassword, setIsLoading, setError, setErrorMessage) {
-    setError(false);
-    setIsLoading(true);
-
-    let data = {
-        username: login,
-        newPassword: password
-    };
-
-    if(password !== confirmPassword) {
+  if (!!login && !!password) {
+    apiClient.post('/auth/login', data).then((response) => {
+      if (response.data.error) {
         setError(true);
         setIsLoading(false);
-        setErrorMessage("Passwords do not match");
-    }
+        setErrorMessage(response.data.error);
+      } else {
+        // 24hours converted into minutes -> seconds -> MS
+        let expirationInMS = 1000 * 60 * 60 * 24;
+        let expirationDate = new Date(new Date().getTime() + expirationInMS);
+        let id_token = {
+          value: response.data.accessToken,
+          expirationDate: expirationDate.toISOstring(),
+        };
 
-    if(!!login && !!password) {
-        apiClient.post("/auth/reset", data)
-        .then((response) => {
-            if(response.data.error) {
-                setError(true);
-                setIsLoading(false);
-                setErrorMessage(response.data.error);
-            } else {
-                setError(null);
-                setIsLoading(false);
-                router.push({ path: "/login"});
-            }
-        })
-    }
-}
-
-export { UserProvider, useUserState, useUserDispatch, loginUser, resetPassword, signOut };
+        SetSessionItem('id_token', JSON.stringify(id_token));
+        setError(false);
+        dispatch({ type: 'LOGIN_SUCCESS' });
+        Router.push('/app/dashboard');
+      }
+    });
+  }
+};
